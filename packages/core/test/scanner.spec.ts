@@ -1,4 +1,4 @@
-import { Catch, Injectable } from '@nestjs/common';
+import { CanActivate, Catch, Injectable, Type } from '@nestjs/common';
 import { GUARDS_METADATA } from '../../common/constants.js';
 import { Controller } from '../../common/decorators/core/controller.decorator.js';
 import { UseGuards } from '../../common/decorators/core/use-guards.decorator.js';
@@ -10,6 +10,7 @@ import {
   APP_GUARD,
   APP_INTERCEPTOR,
   APP_PIPE,
+  MODULE_GUARD,
 } from '../constants.js';
 import { InvalidClassModuleException } from '../errors/exceptions/invalid-class-module.exception.js';
 import { InvalidModuleException } from '../errors/exceptions/invalid-module.exception.js';
@@ -551,8 +552,13 @@ describe('DependenciesScanner', () => {
       scanner.applyApplicationProviders();
 
       expect(applySpy).toHaveBeenCalled();
-      expect(applySpy).toHaveBeenCalledWith(expectedInstance);
-      expect(insertAttachedEnhancerStub).toHaveBeenCalledWith(instanceWrapper);
+      expect(applySpy).toHaveBeenCalledWith(
+        expectedInstance,
+        provider.moduleKey,
+      );
+      expect(insertAttachedEnhancerStub).toHaveBeenCalledWith(instanceWrapper, {
+        isGlobal: true,
+      });
     });
     it('should apply each globally scoped provider', () => {
       const provider = {
@@ -587,9 +593,13 @@ describe('DependenciesScanner', () => {
       scanner.applyApplicationProviders();
 
       expect(applySpy).toHaveBeenCalled();
-      expect(applySpy).toHaveBeenCalledWith(expectedInstanceWrapper);
+      expect(applySpy).toHaveBeenCalledWith(
+        expectedInstanceWrapper,
+        provider.moduleKey,
+      );
       expect(insertAttachedEnhancerStub).toHaveBeenCalledWith(
         expectedInstanceWrapper,
+        { isGlobal: true },
       );
     });
   });
@@ -689,6 +699,28 @@ describe('DependenciesScanner', () => {
       });
     });
   });
+  describe('getApplyProvidersMap for module guards', () => {
+    it(`should call "addModuleGuard" with the declaring module key when token is ${MODULE_GUARD}`, () => {
+      const guard: CanActivate = { canActivate: () => true };
+      const addSpy = vi.spyOn(
+        untypedScanner.applicationConfig,
+        'addModuleGuard',
+      );
+      scanner.getApplyProvidersMap()[MODULE_GUARD](guard, 'moduleToken');
+      expect(addSpy).toHaveBeenCalledWith('moduleToken', guard);
+    });
+    it(`should call "addModuleRequestGuard" with the declaring module key when token is ${MODULE_GUARD}`, () => {
+      const wrapper = new InstanceWrapper<CanActivate>();
+      const addSpy = vi.spyOn(
+        untypedScanner.applicationConfig,
+        'addModuleRequestGuard',
+      );
+      scanner
+        .getApplyRequestProvidersMap()
+        [MODULE_GUARD](wrapper, 'moduleToken');
+      expect(addSpy).toHaveBeenCalledWith('moduleToken', wrapper);
+    });
+  });
   describe('getApplyRequestProvidersMap', () => {
     describe(`when token is ${APP_INTERCEPTOR}`, () => {
       it('call "addGlobalRequestInterceptor"', () => {
@@ -751,6 +783,187 @@ describe('DependenciesScanner', () => {
       } catch (exception) {
         expect(exception instanceof InvalidModuleException).toBe(true);
       }
+    });
+  });
+
+  describe('module guards', () => {
+    const guard: CanActivate = { canActivate: () => true };
+
+    @Injectable({ scope: Scope.REQUEST })
+    class RequestScopedGuard implements CanActivate {
+      canActivate() {
+        return true;
+      }
+    }
+
+    @Controller('first')
+    class FirstController {}
+
+    @Controller('second')
+    class SecondController {}
+
+    @Module({
+      controllers: [FirstController],
+      providers: [{ provide: MODULE_GUARD, useValue: guard }],
+    })
+    class GuardedModule {}
+
+    @Module({
+      controllers: [FirstController],
+      providers: [{ provide: MODULE_GUARD, useClass: RequestScopedGuard }],
+    })
+    class RequestGuardedModule {}
+
+    @Module({ controllers: [SecondController] })
+    class UnguardedModule {}
+
+    @Module({ imports: [GuardedModule, UnguardedModule] })
+    class GuardedRoot {}
+
+    @Module({ imports: [RequestGuardedModule, UnguardedModule] })
+    class RequestGuardedRoot {}
+
+    const moduleOf = (metatype: Type<unknown>) => {
+      const moduleRef = Array.from(container.getModules().values()).find(
+        candidate => candidate.metatype === metatype,
+      );
+      if (!moduleRef) {
+        throw new Error(`${metatype.name} was not scanned`);
+      }
+      return moduleRef;
+    };
+    const controllerOf = (
+      moduleType: Type<unknown>,
+      controller: Type<unknown>,
+    ) => {
+      const wrapper = moduleOf(moduleType).controllers.get(controller);
+      if (!wrapper) {
+        throw new Error(`${controller.name} was not registered`);
+      }
+      return wrapper;
+    };
+
+    describe('insertProvider', () => {
+      it('should record the declaring module and register a guard enhancer', async () => {
+        const { moduleRef } =
+          (await container.addModule(GuardedModule, [])) ?? {};
+        if (!moduleRef) {
+          throw new Error('module was not added');
+        }
+
+        scanner.insertProvider(
+          { provide: MODULE_GUARD, useValue: guard },
+          moduleRef.token,
+        );
+
+        const [applied] = untypedScanner.applicationProvidersApplyMap;
+        expect(applied.type).toEqual(MODULE_GUARD);
+        expect(applied.moduleKey).toEqual(moduleRef.token);
+        expect(moduleRef.getProviderByKey(applied.providerKey).subtype).toEqual(
+          'guard',
+        );
+      });
+    });
+
+    describe('applyApplicationProviders', () => {
+      beforeEach(() => {
+        vi.spyOn(graphInspector, 'insertAttachedEnhancer').mockImplementation(
+          () => {},
+        );
+      });
+
+      it('should store the guard for its declaring module only and not as global', async () => {
+        await scanner.scan(GuardedRoot);
+        scanner.applyApplicationProviders();
+        const applicationConfig = untypedScanner.applicationConfig;
+
+        expect(
+          applicationConfig.getModuleGuards(moduleOf(GuardedModule).token),
+        ).toEqual([guard]);
+        expect(
+          applicationConfig.getModuleGuards(moduleOf(UnguardedModule).token),
+        ).toEqual([]);
+        expect(applicationConfig.getGlobalGuards()).toEqual([]);
+      });
+      it('should not mark the guard as a global enhancer in the graph', async () => {
+        await scanner.scan(GuardedModule);
+        scanner.applyApplicationProviders();
+
+        expect(graphInspector.insertAttachedEnhancer).toHaveBeenCalledWith(
+          expect.any(InstanceWrapper),
+          { isGlobal: false },
+        );
+      });
+      it('should store a request scoped guard for its declaring module only', async () => {
+        await scanner.scan(RequestGuardedModule);
+        scanner.applyApplicationProviders();
+        const applicationConfig = untypedScanner.applicationConfig;
+
+        expect(
+          applicationConfig.getModuleRequestGuards(
+            moduleOf(RequestGuardedModule).token,
+          ),
+        ).toHaveLength(1);
+        expect(applicationConfig.getGlobalRequestGuards()).toEqual([]);
+      });
+      it('should not mark a request scoped guard as a global enhancer in the graph', async () => {
+        await scanner.scan(RequestGuardedModule);
+        scanner.applyApplicationProviders();
+
+        expect(graphInspector.insertAttachedEnhancer).toHaveBeenCalledWith(
+          expect.any(InstanceWrapper),
+          { isGlobal: false },
+        );
+      });
+    });
+
+    describe('graph inspection', () => {
+      @Module({
+        providers: [
+          { provide: APP_GUARD, useValue: guard },
+          { provide: MODULE_GUARD, useValue: guard },
+        ],
+      })
+      class AppAndModuleGuardsModule {}
+
+      it('should label only the app guard as global in the serialized graph', async () => {
+        await scanner.scan(AppAndModuleGuardsModule);
+        graphInspector.inspectModules();
+        scanner.applyApplicationProviders();
+
+        const globalFlagByGuardToken = Object.fromEntries(
+          Object.values(container.serializedGraph.toJSON().nodes)
+            .filter(
+              node =>
+                'subtype' in node.metadata && node.metadata.subtype === 'guard',
+            )
+            .map(node => [node.label.split(' ')[0], node.metadata.global]),
+        );
+
+        expect(globalFlagByGuardToken).toEqual({
+          [APP_GUARD]: true,
+          [MODULE_GUARD]: false,
+        });
+      });
+    });
+
+    describe('addScopedEnhancersMetadata', () => {
+      it('should attach a request scoped module guard only to controllers of its module', async () => {
+        await scanner.scan(RequestGuardedRoot);
+
+        expect(
+          controllerOf(
+            RequestGuardedModule,
+            FirstController,
+          ).getEnhancersMetadata(),
+        ).toHaveLength(1);
+        expect(
+          controllerOf(
+            UnguardedModule,
+            SecondController,
+          ).getEnhancersMetadata() ?? [],
+        ).toEqual([]);
+      });
     });
   });
 });

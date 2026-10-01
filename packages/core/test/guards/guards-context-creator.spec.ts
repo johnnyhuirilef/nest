@@ -1,5 +1,7 @@
+import { CanActivate, UseGuards } from '@nestjs/common';
 import { ApplicationConfig } from '../../application-config.js';
 import { GuardsContextCreator } from '../../guards/guards-context-creator.js';
+import { STATIC_CONTEXT } from '../../injector/constants.js';
 import { InstanceWrapper } from '../../injector/instance-wrapper.js';
 
 class Guard {}
@@ -159,6 +161,161 @@ describe('GuardsContextCreator', () => {
         expect(guardsContextCreator.getGlobalMetadata({ id: 3 })).toEqual(
           expect.arrayContaining([instance, ...globalGuards]),
         );
+      });
+    });
+    describe('when contextId is static and inquirerId is defined', () => {
+      it('should resolve request scoped guards for the inquirer', () => {
+        const instanceWrapper = new InstanceWrapper<CanActivate>();
+        const scopedGuard = { canActivate: () => true };
+        vi.spyOn(applicationConfig, 'getGlobalRequestGuards').mockReturnValue([
+          instanceWrapper,
+        ]);
+        vi.spyOn(instanceWrapper, 'getInstanceByContextId').mockReturnValue({
+          instance: scopedGuard,
+        });
+
+        expect(
+          guardsContextCreator.getGlobalMetadata(STATIC_CONTEXT, 'inquirer'),
+        ).toEqual([scopedGuard]);
+        expect(instanceWrapper.getInstanceByContextId).toHaveBeenCalledWith(
+          STATIC_CONTEXT,
+          'inquirer',
+        );
+      });
+    });
+  });
+
+  describe('module guards', () => {
+    const moduleKey = 'moduleKey';
+    const guardNamed = (name: string): CanActivate & { name: string } => ({
+      name,
+      canActivate: () => true,
+    });
+    const requestScopedWrapper = (guard: CanActivate) => {
+      const wrapper = new InstanceWrapper<CanActivate>();
+      vi.spyOn(wrapper, 'getInstanceByContextId').mockReturnValue({
+        instance: guard,
+      });
+      return wrapper;
+    };
+
+    describe('getModuleMetadata', () => {
+      it('should return no guards when there is no application config', () => {
+        const creatorWithoutConfig = new GuardsContextCreator(container);
+        creatorWithoutConfig.create({}, () => undefined, moduleKey);
+
+        expect(creatorWithoutConfig.getModuleMetadata()).toEqual([]);
+      });
+      it('should return only the guards of the module being created', () => {
+        const ownGuard = guardNamed('own');
+        applicationConfig.addModuleGuard(moduleKey, ownGuard);
+        applicationConfig.addModuleGuard('otherKey', guardNamed('other'));
+        guardsContextCreator.create({}, () => undefined, moduleKey);
+
+        expect(guardsContextCreator.getModuleMetadata()).toEqual([ownGuard]);
+      });
+      it('should merge request scoped guards of the module being created', () => {
+        const staticGuard = guardNamed('static');
+        const scopedGuard = guardNamed('scoped');
+        applicationConfig.addModuleGuard(moduleKey, staticGuard);
+        applicationConfig.addModuleRequestGuard(
+          moduleKey,
+          requestScopedWrapper(scopedGuard),
+        );
+        applicationConfig.addModuleRequestGuard(
+          'otherKey',
+          requestScopedWrapper(guardNamed('otherScoped')),
+        );
+        guardsContextCreator.create({}, () => undefined, moduleKey);
+
+        expect(guardsContextCreator.getModuleMetadata({ id: 3 })).toEqual([
+          staticGuard,
+          scopedGuard,
+        ]);
+      });
+      it('should resolve request scoped guards for the inquirer and the parent context', () => {
+        const wrapper = requestScopedWrapper(guardNamed('scoped'));
+        const parentContextId = { id: 7 };
+        const contextId = { id: 3, getParent: () => parentContextId };
+        applicationConfig.addModuleRequestGuard(moduleKey, wrapper);
+        guardsContextCreator.create({}, () => undefined, moduleKey);
+
+        guardsContextCreator.getModuleMetadata(contextId, 'inquirer');
+
+        expect(wrapper.getInstanceByContextId).toHaveBeenCalledWith(
+          parentContextId,
+          'inquirer',
+        );
+      });
+      it('should merge request scoped guards for an inquirer in the static context', () => {
+        const staticGuard = guardNamed('static');
+        const scopedGuard = guardNamed('scoped');
+        applicationConfig.addModuleGuard(moduleKey, staticGuard);
+        applicationConfig.addModuleRequestGuard(
+          moduleKey,
+          requestScopedWrapper(scopedGuard),
+        );
+        guardsContextCreator.create({}, () => undefined, moduleKey);
+
+        expect(
+          guardsContextCreator.getModuleMetadata(STATIC_CONTEXT, 'inquirer'),
+        ).toEqual([staticGuard, scopedGuard]);
+      });
+      it('should not resolve request scoped guards in the static context', () => {
+        const wrapper = requestScopedWrapper(guardNamed('scoped'));
+        applicationConfig.addModuleRequestGuard(moduleKey, wrapper);
+        guardsContextCreator.create({}, () => undefined, moduleKey);
+
+        expect(guardsContextCreator.getModuleMetadata()).toEqual([]);
+        expect(wrapper.getInstanceByContextId).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('create', () => {
+      it('should order guards as global, module, class and method', () => {
+        const globalGuard = guardNamed('global');
+        const moduleGuard = guardNamed('module');
+        const classGuard = guardNamed('class');
+        const methodGuard = guardNamed('method');
+        applicationConfig.addGlobalGuard(globalGuard);
+        applicationConfig.addModuleGuard(moduleKey, moduleGuard);
+
+        @UseGuards(classGuard)
+        class TestController {
+          @UseGuards(methodGuard)
+          handle() {}
+        }
+        const controller = new TestController();
+
+        expect(
+          guardsContextCreator.create(controller, controller.handle, moduleKey),
+        ).toEqual([globalGuard, moduleGuard, classGuard, methodGuard]);
+      });
+      it('should forward the inquirer and the parent context to request scoped module guards', () => {
+        const wrapper = requestScopedWrapper(guardNamed('scoped'));
+        const parentContextId = { id: 7 };
+        const contextId = { id: 3, getParent: () => parentContextId };
+        applicationConfig.addModuleRequestGuard(moduleKey, wrapper);
+
+        guardsContextCreator.create(
+          {},
+          () => undefined,
+          moduleKey,
+          contextId,
+          'inquirer',
+        );
+
+        expect(wrapper.getInstanceByContextId).toHaveBeenCalledWith(
+          parentContextId,
+          'inquirer',
+        );
+      });
+      it('should not apply guards of another module', () => {
+        applicationConfig.addModuleGuard('otherKey', guardNamed('other'));
+
+        expect(
+          guardsContextCreator.create({}, () => undefined, moduleKey),
+        ).toEqual([]);
       });
     });
   });

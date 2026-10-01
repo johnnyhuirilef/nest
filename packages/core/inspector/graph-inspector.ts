@@ -90,9 +90,12 @@ export class GraphInspector {
     });
   }
 
-  public insertAttachedEnhancer(wrapper: InstanceWrapper) {
+  public insertAttachedEnhancer(
+    wrapper: InstanceWrapper,
+    { isGlobal = true }: { isGlobal?: boolean } = {},
+  ) {
     const existingNode = this.graph.getNodeById(wrapper.id)!;
-    existingNode.metadata.global = true;
+    existingNode.metadata.global = isGlobal;
 
     this.graph.insertAttachedEnhancer(existingNode.id);
   }

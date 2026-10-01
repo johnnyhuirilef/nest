@@ -1,6 +1,7 @@
-import { RequestMethod } from '@nestjs/common';
+import { CanActivate, RequestMethod } from '@nestjs/common';
 import { GlobalPrefixOptions } from '@nestjs/common/interfaces/index.js';
 import { ApplicationConfig } from '../application-config.js';
+import { InstanceWrapper } from '../injector/instance-wrapper.js';
 import { ExcludeRouteMetadata } from '../router/interfaces/exclude-route-metadata.interface.js';
 
 describe('ApplicationConfig', () => {
@@ -103,6 +104,61 @@ describe('ApplicationConfig', () => {
       appConfig.addGlobalRequestGuard(guard as any);
 
       expect(appConfig.getGlobalRequestGuards()).toContain(guard);
+    });
+  });
+  describe('Module guards', () => {
+    const allowingGuard: CanActivate = { canActivate: () => true };
+    const otherGuard: CanActivate = { canActivate: () => false };
+
+    it('should return no guards for a module without any', () => {
+      expect(appConfig.getModuleGuards('moduleKey')).toEqual([]);
+    });
+    it('should keep guards separated by module key', () => {
+      appConfig.addModuleGuard('moduleKey', allowingGuard);
+      appConfig.addModuleGuard('otherKey', otherGuard);
+
+      expect(appConfig.getModuleGuards('moduleKey')).toEqual([allowingGuard]);
+      expect(appConfig.getModuleGuards('otherKey')).toEqual([otherGuard]);
+    });
+    it('should accumulate guards of the same module in insertion order', () => {
+      appConfig.addModuleGuard('moduleKey', allowingGuard);
+      appConfig.addModuleGuard('moduleKey', otherGuard);
+
+      expect(appConfig.getModuleGuards('moduleKey')).toEqual([
+        allowingGuard,
+        otherGuard,
+      ]);
+    });
+    it('should not expose module guards as global guards', () => {
+      appConfig.addModuleGuard('moduleKey', allowingGuard);
+
+      expect(appConfig.getGlobalGuards()).toEqual([]);
+    });
+    it('should not mutate a previously returned list', () => {
+      appConfig.addModuleGuard('moduleKey', allowingGuard);
+      const guardsBefore = appConfig.getModuleGuards('moduleKey');
+      appConfig.addModuleGuard('moduleKey', otherGuard);
+
+      expect(guardsBefore).toEqual([allowingGuard]);
+    });
+    it('should keep request guards separated by module key', () => {
+      const wrapper = new InstanceWrapper<CanActivate>();
+      appConfig.addModuleRequestGuard('moduleKey', wrapper);
+
+      expect(appConfig.getModuleRequestGuards('moduleKey')).toEqual([wrapper]);
+      expect(appConfig.getModuleRequestGuards('otherKey')).toEqual([]);
+      expect(appConfig.getGlobalRequestGuards()).toEqual([]);
+    });
+    it('should accumulate request guards of the same module', () => {
+      const first = new InstanceWrapper<CanActivate>();
+      const second = new InstanceWrapper<CanActivate>();
+      appConfig.addModuleRequestGuard('moduleKey', first);
+      appConfig.addModuleRequestGuard('moduleKey', second);
+
+      expect(appConfig.getModuleRequestGuards('moduleKey')).toEqual([
+        first,
+        second,
+      ]);
     });
   });
   describe('PreRequestHooks', () => {

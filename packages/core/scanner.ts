@@ -7,6 +7,7 @@ import {
   APP_INTERCEPTOR,
   APP_PIPE,
   ENHANCER_TOKEN_TO_SUBTYPE_MAP,
+  MODULE_GUARD,
 } from './constants.js';
 import { CircularDependencyException } from './errors/exceptions/circular-dependency.exception.js';
 import { InvalidClassModuleException } from './errors/exceptions/invalid-class-module.exception.js';
@@ -483,11 +484,7 @@ export class DependenciesScanner {
 
     const enhancerSubtype =
       ENHANCER_TOKEN_TO_SUBTYPE_MAP[
-        type as
-          | typeof APP_GUARD
-          | typeof APP_PIPE
-          | typeof APP_FILTER
-          | typeof APP_INTERCEPTOR
+        type as keyof typeof ENHANCER_TOKEN_TO_SUBTYPE_MAP
       ];
     const factoryOrClassProvider = newProvider as
       FactoryProvider | ClassProvider;
@@ -636,19 +633,25 @@ export class DependenciesScanner {
   }
 
   /**
-   * Add either request or transient globally scoped enhancers
-   * to all controllers metadata storage
+   * Add request or transient scoped enhancers to the controllers metadata
+   * storage: every controller for APP_* tokens, only the controllers of the
+   * declaring module for MODULE_GUARD.
    */
   public addScopedEnhancersMetadata() {
     iterate(this.applicationProvidersApplyMap)
       .filter(wrapper => this.isRequestOrTransient(wrapper.scope!))
-      .forEach(({ moduleKey, providerKey }) => {
+      .forEach(({ moduleKey, providerKey, type }) => {
         const modulesContainer = this.container.getModules();
         const { injectables } = modulesContainer.get(moduleKey)!;
         const instanceWrapper = injectables.get(providerKey);
 
         const iterableIterator = modulesContainer.values();
         iterate(iterableIterator)
+          .filter(
+            moduleRef =>
+              !this.isModuleScopedEnhancer(type) ||
+              moduleRef.token === moduleKey,
+          )
           .map(moduleRef =>
             Array.from<InstanceWrapper>(moduleRef.controllers.values()).concat(
               moduleRef.entryProviders,
@@ -675,9 +678,12 @@ export class DependenciesScanner {
       return collection.get(providerKey);
     };
 
-    // Add global enhancers to the application config
+    // Module guards are keyed by their declaring module so they stay scoped to it
     this.applicationProvidersApplyMap.forEach(
       ({ moduleKey, providerKey, type, scope }) => {
+        const attachedEnhancerOptions = {
+          isGlobal: !this.isModuleScopedEnhancer(type),
+        };
         let instanceWrapper: InstanceWrapper;
         if (this.isRequestOrTransient(scope!)) {
           instanceWrapper = getInstanceWrapper(
@@ -686,16 +692,25 @@ export class DependenciesScanner {
             'injectables',
           )!;
 
-          this.graphInspector.insertAttachedEnhancer(instanceWrapper);
-          return applyRequestProvidersMap[type as string](instanceWrapper);
+          this.graphInspector.insertAttachedEnhancer(
+            instanceWrapper,
+            attachedEnhancerOptions,
+          );
+          return applyRequestProvidersMap[type as string](
+            instanceWrapper,
+            moduleKey,
+          );
         }
         instanceWrapper = getInstanceWrapper(
           moduleKey,
           providerKey,
           'providers',
         )!;
-        this.graphInspector.insertAttachedEnhancer(instanceWrapper);
-        applyProvidersMap[type as string](instanceWrapper.instance);
+        this.graphInspector.insertAttachedEnhancer(
+          instanceWrapper,
+          attachedEnhancerOptions,
+        );
+        applyProvidersMap[type as string](instanceWrapper.instance, moduleKey);
       },
     );
   }
@@ -708,6 +723,8 @@ export class DependenciesScanner {
         this.applicationConfig.addGlobalPipe(pipe),
       [APP_GUARD]: (guard: CanActivate) =>
         this.applicationConfig.addGlobalGuard(guard),
+      [MODULE_GUARD]: (guard: CanActivate, moduleKey: string) =>
+        this.applicationConfig.addModuleGuard(moduleKey, guard),
       [APP_FILTER]: (filter: ExceptionFilter) =>
         this.applicationConfig.addGlobalFilter(filter),
     };
@@ -721,9 +738,17 @@ export class DependenciesScanner {
         this.applicationConfig.addGlobalRequestPipe(pipe),
       [APP_GUARD]: (guard: InstanceWrapper<CanActivate>) =>
         this.applicationConfig.addGlobalRequestGuard(guard),
+      [MODULE_GUARD]: (
+        guard: InstanceWrapper<CanActivate>,
+        moduleKey: string,
+      ) => this.applicationConfig.addModuleRequestGuard(moduleKey, guard),
       [APP_FILTER]: (filter: InstanceWrapper<ExceptionFilter>) =>
         this.applicationConfig.addGlobalRequestFilter(filter),
     };
+  }
+
+  private isModuleScopedEnhancer(type: InjectionToken): boolean {
+    return type === MODULE_GUARD;
   }
 
   public isDynamicModule(

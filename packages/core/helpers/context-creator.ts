@@ -12,6 +12,12 @@ export abstract class ContextCreator {
     contextId?: ContextId,
     inquirerId?: string,
   ): T;
+  public getModuleMetadata(
+    _contextId?: ContextId,
+    _inquirerId?: string,
+  ): unknown[] {
+    return [];
+  }
 
   public createContext<T extends unknown[] = any, R extends unknown[] = any>(
     instance: Controller,
@@ -23,11 +29,17 @@ export abstract class ContextCreator {
     const globalMetadata =
       this.getGlobalMetadata &&
       this.getGlobalMetadata<T>(contextId, inquirerId);
+    const moduleMetadata = this.getModuleMetadata(contextId, inquirerId);
     const classMetadata = this.reflectClassMetadata<T>(instance, metadataKey);
     const methodMetadata = this.reflectMethodMetadata<T>(callback, metadataKey);
     return [
       ...this.createConcreteContext<T, R>(
         globalMetadata || ([] as unknown[] as T),
+        contextId,
+        inquirerId,
+      ),
+      ...this.createConcreteContext<unknown[], R>(
+        moduleMetadata,
         contextId,
         inquirerId,
       ),

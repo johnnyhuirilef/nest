@@ -181,28 +181,30 @@ describe('GraphInspector', () => {
   });
 
   describe('insertAttachedEnhancer', () => {
+    const createEnhancerNode = (instanceWrapper: InstanceWrapper) => ({
+      id: instanceWrapper.id,
+      label: 'A',
+      parent: '2c989d11-2731-4828-a2eb-c86d10c73621',
+      metadata: {
+        type: 'provider' as const,
+        sourceModuleName: 'AppModule',
+        durable: false,
+        static: true,
+        scope: Scope.DEFAULT,
+        transient: false,
+        token: class A {},
+        exported: false,
+        initTime: 100,
+      },
+    });
+
     it('should upsert existing node (update metadata) and add node to "attachedEnhancers" array', () => {
       const instanceWrapper = new InstanceWrapper({
         metatype: class A {},
         token: 'A',
       });
 
-      const nodeDefinition = {
-        id: instanceWrapper.id,
-        label: 'A',
-        parent: '2c989d11-2731-4828-a2eb-c86d10c73621',
-        metadata: {
-          type: 'provider' as const,
-          sourceModuleName: 'AppModule',
-          durable: false,
-          static: true,
-          scope: Scope.DEFAULT,
-          transient: false,
-          token: class A {},
-          exported: false,
-          initTime: 100,
-        },
-      };
+      const nodeDefinition = createEnhancerNode(instanceWrapper);
       const insertedNode = graph.insertNode(nodeDefinition)!;
 
       graphInspector.insertAttachedEnhancer(instanceWrapper);
@@ -213,6 +215,27 @@ describe('GraphInspector', () => {
       });
       expect(graph['extras'].attachedEnhancers).toContainEqual({
         nodeId: insertedNode.id,
+      });
+    });
+    it('should not mark the node as global when the enhancer is not global', () => {
+      const instanceWrapper = new InstanceWrapper({
+        metatype: class A {},
+        token: 'A',
+      });
+
+      const nodeDefinition = createEnhancerNode(instanceWrapper);
+      const insertedNode = graph.insertNode(nodeDefinition);
+
+      graphInspector.insertAttachedEnhancer(instanceWrapper, {
+        isGlobal: false,
+      });
+
+      expect(insertedNode?.metadata).toEqual({
+        ...nodeDefinition.metadata,
+        global: false,
+      });
+      expect(graph['extras'].attachedEnhancers).toContainEqual({
+        nodeId: insertedNode?.id,
       });
     });
   });

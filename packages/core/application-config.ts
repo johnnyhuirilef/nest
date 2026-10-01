@@ -32,6 +32,11 @@ export class ApplicationConfig {
   private readonly globalRequestInterceptors: InstanceWrapper<NestInterceptor>[] =
     [];
   private readonly globalRequestGuards: InstanceWrapper<CanActivate>[] = [];
+  private readonly moduleGuards = new Map<string, CanActivate[]>();
+  private readonly moduleRequestGuards = new Map<
+    string,
+    InstanceWrapper<CanActivate>[]
+  >();
 
   constructor(private ioAdapter: WebSocketAdapter | null = null) {}
 
@@ -141,6 +146,33 @@ export class ApplicationConfig {
 
   public getGlobalRequestGuards(): InstanceWrapper<CanActivate>[] {
     return this.globalRequestGuards;
+  }
+
+  public addModuleGuard(moduleKey: string, guard: CanActivate) {
+    this.moduleGuards.set(moduleKey, [
+      ...this.getModuleGuards(moduleKey),
+      guard,
+    ]);
+  }
+
+  public getModuleGuards(moduleKey: string): CanActivate[] {
+    return this.moduleGuards.get(moduleKey) ?? [];
+  }
+
+  public addModuleRequestGuard(
+    moduleKey: string,
+    wrapper: InstanceWrapper<CanActivate>,
+  ) {
+    this.moduleRequestGuards.set(moduleKey, [
+      ...this.getModuleRequestGuards(moduleKey),
+      wrapper,
+    ]);
+  }
+
+  public getModuleRequestGuards(
+    moduleKey: string,
+  ): InstanceWrapper<CanActivate>[] {
+    return this.moduleRequestGuards.get(moduleKey) ?? [];
   }
 
   public registerPreRequestHook(...hooks: PreRequestHook[]) {

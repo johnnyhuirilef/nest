@@ -4,7 +4,7 @@ import { ApplicationConfig } from '../application-config.js';
 import { ContextCreator } from '../helpers/context-creator.js';
 import { STATIC_CONTEXT } from '../injector/constants.js';
 import { NestContainer } from '../injector/container.js';
-import { InstanceWrapper } from '../injector/instance-wrapper.js';
+import { ContextId, InstanceWrapper } from '../injector/instance-wrapper.js';
 import {
   GUARDS_METADATA,
   type Controller,
@@ -107,9 +107,41 @@ export class GuardsContextCreator extends ContextCreator {
     if (contextId === STATIC_CONTEXT && !inquirerId) {
       return globalGuards;
     }
-    const scopedGuardWrappers =
-      this.config.getGlobalRequestGuards() as InstanceWrapper[];
-    const scopedGuards = iterate(scopedGuardWrappers)
+    const scopedGuards = this.resolveRequestScopedGuards(
+      this.config.getGlobalRequestGuards(),
+      contextId,
+      inquirerId,
+    );
+
+    return globalGuards.concat(scopedGuards) as T;
+  }
+
+  public getModuleMetadata(
+    contextId = STATIC_CONTEXT,
+    inquirerId?: string,
+  ): CanActivate[] {
+    if (!this.config) {
+      return [];
+    }
+    const moduleGuards = this.config.getModuleGuards(this.moduleContext);
+    if (contextId === STATIC_CONTEXT && !inquirerId) {
+      return moduleGuards;
+    }
+    const scopedGuards = this.resolveRequestScopedGuards(
+      this.config.getModuleRequestGuards(this.moduleContext),
+      contextId,
+      inquirerId,
+    );
+
+    return moduleGuards.concat(scopedGuards);
+  }
+
+  private resolveRequestScopedGuards(
+    wrappers: InstanceWrapper<CanActivate>[],
+    contextId: ContextId,
+    inquirerId?: string,
+  ): CanActivate[] {
+    return iterate(wrappers)
       .map(wrapper =>
         wrapper.getInstanceByContextId(
           this.getContextId(contextId, wrapper),
@@ -119,7 +151,5 @@ export class GuardsContextCreator extends ContextCreator {
       .filter(host => !!host)
       .map(host => host.instance)
       .toArray();
-
-    return globalGuards.concat(scopedGuards) as T;
   }
 }
